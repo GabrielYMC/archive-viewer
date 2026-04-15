@@ -649,6 +649,55 @@
     font-style: italic;
   }
 
+  /* ─── Skill Styles ─── */
+  .file-type-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 1px 4px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-left: 5px;
+  }
+  .badge-skill {
+    background: rgba(52,211,153,0.15);
+    color: var(--accent2);
+    border: 1px solid rgba(52,211,153,0.3);
+  }
+  .file-item.selected.skill-item { border-left-color: var(--accent2); }
+
+  #type-filter {
+    padding: 5px 12px;
+    border-bottom: 1px solid var(--border);
+    display: none;
+    gap: 4px;
+    align-items: center;
+  }
+  #type-filter.visible { display: flex; }
+
+  .type-btn {
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-dimmer);
+    cursor: pointer;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: transparent;
+    transition: all 0.15s;
+  }
+  .type-btn:hover { color: var(--text-dim); border-color: var(--border2); }
+  .type-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+
+  .skill-chip {
+    background: rgba(52,211,153,0.12);
+    border-color: rgba(52,211,153,0.25) !important;
+    color: var(--accent2) !important;
+  }
+  .skill-chip:hover { background: rgba(52,211,153,0.2) !important; }
+
   /* ─── Drop Zone (initial state) ─── */
   #drop-overlay {
     position: fixed;
@@ -736,10 +785,11 @@
   <!-- Left: File List -->
   <div id="file-panel">
     <div id="file-panel-header">
-      <span>封存檔案</span>
+      <span>檔案庫</span>
       <span class="panel-count" id="shown-count"></span>
       <button class="tag-toggle-btn" id="tag-toggle-btn" onclick="toggleTagPanel()">Tags ▸</button>
     </div>
+    <div id="type-filter"></div>
     <div id="tag-filter"></div>
     <div id="file-list"></div>
   </div>
@@ -758,7 +808,7 @@
   <!-- Right: Conversation -->
   <div id="convo-panel">
     <div id="convo-panel-header">
-      <span>對話全文</span>
+      <span id="convo-panel-title">對話全文</span>
       <input type="text" id="convo-search" placeholder="搜尋對話內容..." />
     </div>
     <div id="convo-content">
@@ -802,8 +852,8 @@
 <!-- Drop overlay -->
 <div id="drop-overlay">
   <div class="drop-icon">📚</div>
-  <div class="drop-title">拖曳封存 .md 檔案到這裡</div>
-  <div class="drop-sub">支援多檔拖曳。檔案需遵循 conversation-archive protocol 格式。</div>
+  <div class="drop-title">拖曳 .md 檔案到這裡</div>
+  <div class="drop-sub">支援多檔拖曳。接受 conversation-archive 封存檔與 skill 技能檔。</div>
   <button class="browse-btn" onclick="document.getElementById('file-input').click()">選擇檔案</button>
   <input type="file" id="file-input" accept=".md" multiple style="display:none" onchange="handleFiles(this.files)">
 </div>
@@ -816,9 +866,10 @@
 
 <script>
 // ─── State ───
-let archives = [];       // parsed archive objects
+let archives = [];       // parsed items (archives + skills)
 let selectedIdx = -1;
 let activeTag = null;
+let activeType = null;   // null | 'conversation-archive' | 'skill'
 let globalQuery = '';
 let convoQuery = '';
 
@@ -891,6 +942,64 @@ function parseArchive(text, filename) {
   return arc;
 }
 
+// ─── Parse a single skill .md file ───
+function parseSkill(text, filename) {
+  const skill = { filename, raw: text, fm: {}, title: '', sections: {}, conversation: '', tags: [] };
+
+  // Frontmatter (same structure as archive)
+  const fmMatch = text.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (fmMatch) {
+    const fmText = fmMatch[1];
+    const get = (key) => {
+      const m = fmText.match(new RegExp(`^${key}:\\s*(.+)`, 'm'));
+      return m ? m[1].trim() : '';
+    };
+    const getList = (key) => {
+      const m = fmText.match(new RegExp(`^${key}:\\s*\\[([^\\]]*)]`, 'm'));
+      if (m) return m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+      const lines = [];
+      const re = new RegExp(`^${key}:\\s*$`, 'm');
+      const idx = fmText.search(re);
+      if (idx >= 0) {
+        const rest = fmText.substring(idx).split('\n').slice(1);
+        for (const l of rest) {
+          const lm = l.match(/^\s+-\s+(.+)/);
+          if (lm) lines.push(lm[1].trim().replace(/^["']|["']$/g, ''));
+          else break;
+        }
+      }
+      return lines;
+    };
+
+    skill.fm = {
+      type: 'skill',
+      name: get('name'),       // slash command name, e.g. "commit"
+      status: get('status'),   // draft | stable | deprecated
+      version: get('version'),
+      created: get('created'),
+      updated: get('updated'),
+    };
+    skill.tags = getList('tags');
+  }
+
+  const content = text.replace(/^---[\s\S]*?---\s*/, '');
+  const titleMatch = content.match(/^#\s+(.+)/m);
+  skill.title = titleMatch ? titleMatch[1].trim() : (skill.fm.name || filename);
+
+  // Skill sections
+  const sectionNames = ['描述', '觸發條件', '參數', '指令內容', '範例', '關鍵字'];
+  for (const name of sectionNames) {
+    const re = new RegExp(`## ${name}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`);
+    const m = content.match(re);
+    skill.sections[name] = m ? m[1].trim() : '';
+  }
+
+  // 指令內容 maps to the right-panel slot
+  skill.conversation = skill.sections['指令內容'] || '';
+
+  return skill;
+}
+
 // ─── Render File List ───
 function renderFileList() {
   const list = document.getElementById('file-list');
@@ -899,18 +1008,20 @@ function renderFileList() {
   list.innerHTML = '';
   filtered.forEach((arc, i) => {
     const realIdx = archives.indexOf(arc);
+    const isSkill = arc.fm.type === 'skill';
     const el = document.createElement('div');
-    el.className = 'file-item' + (realIdx === selectedIdx ? ' selected' : '');
+    el.className = 'file-item' + (realIdx === selectedIdx ? ' selected' : '') + (isSkill ? ' skill-item' : '');
     el.onclick = () => selectFile(realIdx);
 
     const dateStr = arc.fm.created || '';
     const partStr = arc.fm.part ? `Part ${arc.fm.part}` : '';
+    const typeTag = isSkill ? '<span class="file-type-badge badge-skill">SKILL</span>' : '';
     const tagsHtml = arc.tags.slice(0, 4).map(t =>
       `<span class="file-tag">${t}</span>`
     ).join('');
 
     el.innerHTML = `
-      <div class="file-date">${dateStr}${partStr ? ' · ' + partStr : ''}</div>
+      <div class="file-date">${dateStr}${partStr ? ' · ' + partStr : ''}${typeTag}</div>
       <div class="file-title">${highlightText(arc.title, globalQuery)}</div>
       ${tagsHtml ? '<div class="file-tags">' + tagsHtml + '</div>' : ''}
     `;
@@ -923,6 +1034,12 @@ function renderFileList() {
 
 function getFilteredArchives() {
   let result = archives;
+
+  if (activeType) {
+    result = result.filter(a =>
+      activeType === 'skill' ? a.fm.type === 'skill' : a.fm.type !== 'skill'
+    );
+  }
 
   if (activeTag) {
     result = result.filter(a => {
@@ -952,10 +1069,55 @@ function getFilteredArchives() {
 // ─── Render Summary ───
 function renderSummary(arc) {
   const el = document.getElementById('summary-content');
+  const extractBtn = document.getElementById('extract-btn');
+
   if (!arc) {
     el.innerHTML = '<div class="summary-empty">← 選取檔案以檢視摘要</div>';
+    if (extractBtn) extractBtn.style.display = '';
     return;
   }
+
+  // Skill layout
+  if (arc.fm.type === 'skill') {
+    if (extractBtn) extractBtn.style.display = 'none';
+
+    const metaHtml = [
+      arc.fm.name ? `<span class="tag-chip skill-chip"><code>/${arc.fm.name}</code></span>` : '',
+      arc.fm.version ? `<span class="tag-chip">${arc.fm.version}</span>` : '',
+      arc.fm.status ? `<span class="tag-chip">${arc.fm.status}</span>` : '',
+    ].filter(Boolean).join('');
+
+    let sectionsHtml = '';
+    for (const name of ['描述', '觸發條件', '參數', '範例']) {
+      const content = arc.sections[name];
+      if (!content) continue;
+      sectionsHtml += `
+        <div class="s-section-label">${name}</div>
+        <div class="s-section-content">${renderMd(content)}</div>
+      `;
+    }
+
+    const kwContent = arc.sections['關鍵字'];
+    if (kwContent) {
+      const keywords = kwContent.split(/[,，]/).map(k => k.trim()).filter(Boolean);
+      sectionsHtml += `
+        <div class="s-section-label">關鍵字</div>
+        <div class="s-tag-list">${keywords.map(k =>
+          `<span class="s-tag" onclick="filterByTag('${k.replace(/'/g, "\\'")}')">${k}</span>`
+        ).join('')}</div>
+      `;
+    }
+
+    el.innerHTML = `
+      <div class="s-title">${arc.title}</div>
+      <div class="s-meta">${metaHtml}</div>
+      ${sectionsHtml}
+    `;
+    return;
+  }
+
+  // Archive layout
+  if (extractBtn) extractBtn.style.display = '';
 
   // Meta tags
   const metaHtml = [
@@ -1013,6 +1175,32 @@ function renderSummary(arc) {
 // ─── Render Conversation ───
 function renderConversation(arc) {
   const el = document.getElementById('convo-content');
+  const titleEl = document.getElementById('convo-panel-title');
+  const searchEl = document.getElementById('convo-search');
+
+  // Skill: show 指令內容 as prompt block
+  if (arc && arc.fm.type === 'skill') {
+    if (titleEl) titleEl.textContent = '指令內容';
+    if (searchEl) searchEl.placeholder = '搜尋指令內容...';
+    if (!arc.conversation) {
+      el.innerHTML = '<div class="convo-empty">此 Skill 沒有指令內容</div>';
+      return;
+    }
+    el.innerHTML = `
+      <div class="msg">
+        <div class="msg-header">
+          <span class="msg-badge" style="background:rgba(52,211,153,0.15);color:var(--accent2);border:1px solid rgba(52,211,153,0.3)">Prompt</span>
+        </div>
+        <div class="msg-body">${renderMd(maybeHighlightConvo(arc.conversation))}</div>
+      </div>
+    `;
+    return;
+  }
+
+  // Archive: restore default header labels
+  if (titleEl) titleEl.textContent = '對話全文';
+  if (searchEl) searchEl.placeholder = '搜尋對話內容...';
+
   if (!arc || !arc.conversation) {
     el.innerHTML = '<div class="convo-empty">此封存檔沒有對話全文</div>';
     return;
@@ -1098,6 +1286,33 @@ function filterByTag(tag) {
   } else {
     af.style.display = 'none';
   }
+}
+
+// ─── Type Filter ───
+function renderTypeFilter() {
+  const el = document.getElementById('type-filter');
+  const archiveCount = archives.filter(a => a.fm.type !== 'skill').length;
+  const skillCount = archives.filter(a => a.fm.type === 'skill').length;
+
+  // Only show when both types are present
+  if (archiveCount === 0 || skillCount === 0) {
+    el.classList.remove('visible');
+    el.innerHTML = '';
+    return;
+  }
+
+  el.classList.add('visible');
+  el.innerHTML = `
+    <span class="type-btn ${activeType === null ? 'active' : ''}" onclick="setTypeFilter(null)">全部</span>
+    <span class="type-btn ${activeType === 'archive' ? 'active' : ''}" onclick="setTypeFilter('archive')">封存 ${archiveCount}</span>
+    <span class="type-btn ${activeType === 'skill' ? 'active' : ''}" onclick="setTypeFilter('skill')">Skill ${skillCount}</span>
+  `;
+}
+
+function setTypeFilter(type) {
+  activeType = type;
+  renderTypeFilter();
+  renderFileList();
 }
 
 let tagPanelOpen = false;
@@ -1217,13 +1432,18 @@ function handleFiles(fileList) {
   for (const file of files) {
     const reader = new FileReader();
     reader.onload = e => {
-      const arc = parseArchive(e.target.result, file.name);
-      archives.push(arc);
+      const text = e.target.result;
+      // Detect type from frontmatter before full parse
+      const typeMatch = text.match(/^---\s*\n[\s\S]*?^type:\s*(\S+)/m);
+      const fmType = typeMatch ? typeMatch[1].trim() : '';
+      const item = fmType === 'skill' ? parseSkill(text, file.name) : parseArchive(text, file.name);
+      archives.push(item);
       loaded++;
       if (loaded === files.length) {
         // Sort by created date desc
         archives.sort((a, b) => (b.fm.created || '').localeCompare(a.fm.created || ''));
         document.getElementById('drop-overlay').classList.add('hidden');
+        renderTypeFilter();
         renderTagFilter();
         renderFileList();
         if (archives.length > 0) selectFile(0);
@@ -1266,11 +1486,13 @@ document.addEventListener('keydown', e => {
     document.getElementById('global-search').focus();
   } else if (e.key === 'Escape') {
     activeTag = null;
+    activeType = null;
     globalQuery = '';
     convoQuery = '';
     document.getElementById('global-search').value = '';
     document.getElementById('convo-search').value = '';
     document.getElementById('active-filter').style.display = 'none';
+    renderTypeFilter();
     renderTagFilter();
     renderFileList();
     document.activeElement.blur();
@@ -1304,6 +1526,7 @@ document.getElementById('layout').addEventListener('dragover', e => e.preventDef
 function openEvergreenEditor() {
   if (selectedIdx < 0) return;
   const arc = archives[selectedIdx];
+  if (arc.fm.type === 'skill') return;
 
   // Hide convo panel, show editor
   document.getElementById('convo-panel').classList.add('hidden-by-editor');
